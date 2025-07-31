@@ -11,7 +11,7 @@ from typing import Dict, Any
 class RAGChunkLocatorClient:
     """RAG切片定位API客户端"""
     
-    def __init__(self, base_url: str = "http://localhost:80004"):
+    def __init__(self, base_url: str = "http://localhost:8004"):
         self.base_url = base_url.rstrip('/')
         
     def check_health(self) -> Dict[str, Any]:
