@@ -161,7 +161,7 @@ def find_continuous_blocks(para_blocks: List[Dict], start_idx: int, target_text:
     return matched_blocks, final_similarity
 
 
-def mineru_chunk_locate(filename: str, text: str, similarity_threshold: float = 0.6) -> Dict[str, Any]:
+def mineru_chunk_locate(filename: str, text: str, similarity_threshold: float = 0.6, page_number: Optional[int] = None) -> Dict[str, Any]:
     """
     根据文本匹配其在全文中的坐标和页码索引
     
@@ -169,6 +169,7 @@ def mineru_chunk_locate(filename: str, text: str, similarity_threshold: float = 
         filename: 文件名（不含扩展名）
         text: 待匹配的文本
         similarity_threshold: 相似度阈值
+        page_number: 起始页面索引（从0开始），如果为None则从第0页开始搜索
         
     Returns:
         匹配结果字典
@@ -181,7 +182,7 @@ def mineru_chunk_locate(filename: str, text: str, similarity_threshold: float = 
             "message": "输入文本为空或无效",
             "results": []
         }
-    
+    if(len(cleaned_text)<100):similarity_threshold = 0.8; #短文本支持 高精度匹配
     # 2. 加载middle.json文件
     json_data = load_middle_json(filename)
     if not json_data:
@@ -202,7 +203,19 @@ def mineru_chunk_locate(filename: str, text: str, similarity_threshold: float = 
     # 3. 遍历所有页面，查找匹配的para_blocks
     all_matches = []
     
+    # 确定起始页面索引
+    start_page = page_number if page_number is not None else 0
+    if start_page >= len(pdf_info):
+        return {
+            "success": False,
+            "message": f"指定的起始页面索引 {start_page} 超出了文档总页数 {len(pdf_info)}",
+            "results": []
+        }
+    
     for page_idx, page_info in enumerate(pdf_info):
+        # 跳过指定页面之前的页面
+        if page_idx < start_page:
+            continue
         para_blocks = page_info.get('para_blocks', [])
         page_size = page_info.get('page_size', [0, 0])
         
@@ -268,7 +281,7 @@ def mineru_chunk_locate(filename: str, text: str, similarity_threshold: float = 
         is_duplicate = False
         for existing in unique_matches:
             if (match['page_idx'] == existing['page_idx'] and 
-                bbox_overlap_ratio(match['bbox'], existing['bbox']) > 0.8):
+                bbox_overlap_ratio(match['bbox'], existing['bbox']) > 0.65):
                 is_duplicate = True
                 break
         if not is_duplicate:

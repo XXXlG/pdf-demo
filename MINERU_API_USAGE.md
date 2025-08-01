@@ -25,6 +25,7 @@ POST /mineru-locate
 | filename | string | 是 | 文件名（不含扩展名），系统会自动在data目录下查找对应的_middle.json文件 |
 | text | string | 是 | 待匹配的文本内容，长度1-50000字符 |
 | similarity_threshold | float | 否 | 相似度阈值(0-1)，默认0.6 |
+| page_number | int | 否 | 起始页面索引（从0开始），如果不指定则从第0页开始搜索 |
 
 ## 响应格式
 
@@ -85,7 +86,8 @@ import requests
 data = {
     "filename": "航天电子产品常见质量缺陷案例.13610530(2)",
     "text": "航天科技图书出版基金资助出版",
-    "similarity_threshold": 0.6
+    "similarity_threshold": 0.6,
+    "page_number": 13  # 从第13页开始搜索
 }
 
 # 发送请求
@@ -114,7 +116,8 @@ curl -X POST "http://localhost:8004/mineru-locate" \
      -d '{
        "filename": "航天电子产品常见质量缺陷案例.13610530(2)",
        "text": "航天科技图书出版基金资助出版",
-       "similarity_threshold": 0.6
+       "similarity_threshold": 0.6,
+       "page_number": 13
      }'
 ```
 
@@ -124,7 +127,8 @@ curl -X POST "http://localhost:8004/mineru-locate" \
 const data = {
     filename: "航天电子产品常见质量缺陷案例.13610530(2)",
     text: "航天科技图书出版基金资助出版",
-    similarity_threshold: 0.6
+    similarity_threshold: 0.6,
+    page_number: 13  // 从第13页开始搜索
 };
 
 fetch("http://localhost:8004/mineru-locate", {

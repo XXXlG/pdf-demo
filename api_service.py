@@ -79,6 +79,7 @@ class MineruChunkRequest(BaseModel):
     filename: str = Field(..., min_length=1, description="文件名（不含扩展名）")
     text: str = Field(..., min_length=1, max_length=50000, description="待匹配的文本内容")
     similarity_threshold: Optional[float] = Field(0.6, ge=0.0, le=1.0, description="相似度阈值(0-1)")
+    page_number: Optional[int] = Field(None, ge=0, description="起始页面索引（从0开始），如果不指定则从第0页开始搜索")
     
     @validator('filename')
     def validate_filename(cls, v):
@@ -93,6 +94,12 @@ class MineruChunkRequest(BaseModel):
         if not v.strip():
             raise ValueError('文本内容不能为空')
         return v.strip()
+    
+    @validator('page_number')
+    def validate_page_number(cls, v):
+        if v is not None and v < 0:
+            raise ValueError('页面索引不能为负数')
+        return v
 
 
 class BlockDetail(BaseModel):
@@ -348,7 +355,8 @@ async def mineru_locate_chunk(request: MineruChunkRequest):
         result = mineru_chunk_locate(
             filename=request.filename,
             text=request.text,
-            similarity_threshold=request.similarity_threshold
+            similarity_threshold=request.similarity_threshold,
+            page_number=request.page_number
         )
         
         # 转换结果格式
@@ -425,7 +433,8 @@ async def get_api_docs():
             "mineru_locate_example": {
                 "filename": "航天电子产品常见质量缺陷案例.13610530(2)",
                 "text": "元器件安装孔与元器件引线不匹配",
-                "similarity_threshold": 0.6
+                "similarity_threshold": 0.6,
+                "page_number": 13
             }
         }
     }
