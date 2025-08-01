@@ -14,7 +14,7 @@ from pathlib import Path
 
 def clean_text_for_matching(text: str) -> str:
     """
-    对文本进行数据清洗，去除特殊符号和多余空格
+    对文本进行数据清洗，去除特殊符号、图片URL和多余空格
     
     Args:
         text: 原始文本
@@ -24,6 +24,10 @@ def clean_text_for_matching(text: str) -> str:
     """
     # 移除多余的空白字符和换行符
     text = re.sub(r'\s+', ' ', text)
+    
+    # 移除图片URL（包括http和https协议的图片链接）
+    image_url_pattern = r'https?://[^\s]*\.(jpg|jpeg|png|gif|bmp|webp|svg|tiff?|ico)(\?[^\s]*)?#'
+    text = re.sub(image_url_pattern, '', text, flags=re.IGNORECASE)
     
     # 移除特殊符号，保留中英文、数字和基本标点
     text = re.sub(r'[^\w\s\u4e00-\u9fff.,!?;:()\[\]{}""\'\'-]', '', text)

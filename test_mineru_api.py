@@ -163,6 +163,68 @@ def test_page_number_feature():
         print(f"❌ 测试出错: {str(e)}")
 
 
+def test_page_limit_feature():
+    """测试4页搜索限制功能"""
+    
+    base_url = "http://localhost:8004"
+    endpoint = f"{base_url}/mineru-locate"
+    
+    print(f"\n🔍 测试4页搜索限制功能")
+    
+    # 测试数据 - 从第20页开始搜索，最多搜索4页
+    test_data = {
+        "filename": "航天电子产品常见质量缺陷案例.13610530(2)",
+        "text": "元器件",
+        "similarity_threshold": 0.3,
+        "page_number": 20
+    }
+    
+    print(f"📋 测试数据: {json.dumps(test_data, ensure_ascii=False, indent=2)}")
+    print(f"💡 预期: 只搜索第20-24页，不会搜索更后面的页面")
+    
+    try:
+        # 发送POST请求
+        response = requests.post(endpoint, json=test_data, timeout=30)
+        
+        print(f"📊 响应状态码: {response.status_code}")
+        
+        if response.status_code == 200:
+            result = response.json()
+            print(f"✅ 请求成功")
+            
+            if result.get('success'):
+                results = result.get('results', [])
+                print(f"🎯 从第{test_data['page_number']}页开始找到 {len(results)} 个匹配结果:")
+                
+                # 检查结果页面范围
+                page_indices = [r['page_idx'] for r in results]
+                min_page = min(page_indices) if page_indices else -1
+                max_page = max(page_indices) if page_indices else -1
+                
+                print(f"📄 搜索到的页面范围: {min_page} - {max_page}")
+                print(f"📏 预期范围: {test_data['page_number']} - {test_data['page_number'] + 4}")
+                
+                # 验证4页限制
+                expected_max = test_data['page_number'] + 4
+                if max_page <= expected_max:
+                    print(f"✅ 4页限制正常工作: 最大页面{max_page} <= 期望最大页面{expected_max}")
+                else:
+                    print(f"❌ 4页限制失效: 最大页面{max_page} > 期望最大页面{expected_max}")
+                
+                # 显示前3个结果
+                for i, match in enumerate(results[:3]):
+                    print(f"  结果 {i+1}: 页面{match['page_idx']}, 相似度{match['similarity']}")
+                    
+            else:
+                print(f"❌ 定位失败: {result.get('message')}")
+        else:
+            print(f"❌ 请求失败: {response.status_code}")
+            print(f"错误信息: {response.text}")
+            
+    except Exception as e:
+        print(f"❌ 测试出错: {str(e)}")
+
+
 if __name__ == "__main__":
     print("🚀 开始测试MinerU文本定位API\n")
     
@@ -177,6 +239,9 @@ if __name__ == "__main__":
     
     # 测试page_number参数功能
     test_page_number_feature()
+    
+    # 测试4页搜索限制功能
+    test_page_limit_feature()
     
     print(f"\n🏁 测试完成")
     print(f"💡 要查看交互式API文档，请访问: http://localhost:8004/docs")
