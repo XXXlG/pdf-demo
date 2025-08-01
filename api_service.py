@@ -15,6 +15,7 @@ import shutil
 from pathlib import Path
 
 from rag_chunk_locator import find_rag_chunk_coordinates, analyze_chunk_content
+from mineru_locator import mineru_chunk_locate
 
 # 创建FastAPI应用
 app = FastAPI(
@@ -73,6 +74,55 @@ class ChunkAnalysisResponse(BaseModel):
     complexity_score: float = Field(..., description="复杂度评分")
 
 
+class MineruChunkRequest(BaseModel):
+    """MinerU文本定位请求模型"""
+    filename: str = Field(..., min_length=1, description="文件名（不含扩展名）")
+    text: str = Field(..., min_length=1, max_length=50000, description="待匹配的文本内容")
+    similarity_threshold: Optional[float] = Field(0.6, ge=0.0, le=1.0, description="相似度阈值(0-1)")
+    
+    @validator('filename')
+    def validate_filename(cls, v):
+        if not v.strip():
+            raise ValueError('文件名不能为空')
+        # 移除可能的路径分隔符，确保安全
+        v = v.replace('/', '').replace('\\', '').replace('..', '')
+        return v.strip()
+    
+    @validator('text')
+    def validate_text(cls, v):
+        if not v.strip():
+            raise ValueError('文本内容不能为空')
+        return v.strip()
+
+
+class BlockDetail(BaseModel):
+    """文本块详细信息"""
+    bbox: List[float] = Field(..., description="文本块边界框")
+    bbox_fs: Optional[List[float]] = Field(None, description="更精确的边界框")
+    index: int = Field(..., description="文本块索引")
+
+
+class MineruMatchResult(BaseModel):
+    """单个匹配结果"""
+    page_idx: int = Field(..., description="页面索引（从0开始）")
+    page_size: List[int] = Field(..., description="页面尺寸 [width, height]")
+    bbox: List[float] = Field(..., description="合并后的边界框 [x0, y0, x1, y1]")
+    similarity: float = Field(..., description="相似度分数")
+    block_count: int = Field(..., description="包含的文本块数量")
+    matched_text_preview: str = Field(..., description="匹配文本预览")
+    block_details: List[BlockDetail] = Field(..., description="各个文本块的详细信息")
+
+
+class MineruChunkResponse(BaseModel):
+    """MinerU文本定位响应模型"""
+    success: bool = Field(..., description="是否成功定位")
+    message: str = Field(..., description="响应消息")
+    query_text: Optional[str] = Field(None, description="查询文本")
+    cleaned_text: Optional[str] = Field(None, description="清洗后的文本")
+    similarity_threshold: Optional[float] = Field(None, description="使用的相似度阈值")
+    results: List[MineruMatchResult] = Field(default=[], description="匹配结果列表")
+
+
 # API端点
 @app.get("/")
 async def root():
@@ -85,6 +135,7 @@ async def root():
             "locate": "/locate - POST - 定位切片位置",
             "analyze": "/analyze - POST - 分析切片内容",
             "upload": "/upload - POST - 上传PDF并定位",
+            "mineru-locate": "/mineru-locate - POST - MinerU格式文本定位",
             "health": "/health - GET - 健康检查"
         }
     }
@@ -280,6 +331,84 @@ async def upload_and_locate(
         )
 
 
+@app.post("/mineru-locate", response_model=MineruChunkResponse)
+async def mineru_locate_chunk(request: MineruChunkRequest):
+    """
+    MinerU格式文本定位接口
+    根据文本匹配其在全文中的坐标和页码索引
+    
+    Args:
+        request: 包含文件名和文本内容的请求
+        
+    Returns:
+        MineruChunkResponse: 定位结果
+    """
+    try:
+        # 调用核心定位功能
+        result = mineru_chunk_locate(
+            filename=request.filename,
+            text=request.text,
+            similarity_threshold=request.similarity_threshold
+        )
+        
+        # 转换结果格式
+        if result['success']:
+            # 转换匹配结果
+            match_results = []
+            for match in result['results']:
+                block_details = []
+                for detail in match['block_details']:
+                    block_details.append(BlockDetail(
+                        bbox=detail['bbox'],
+                        bbox_fs=detail.get('bbox_fs'),
+                        index=detail['index']
+                    ))
+                
+                match_results.append(MineruMatchResult(
+                    page_idx=match['page_idx'],
+                    page_size=match['page_size'],
+                    bbox=match['bbox'],
+                    similarity=match['similarity'],
+                    block_count=match['block_count'],
+                    matched_text_preview=match['matched_text_preview'],
+                    block_details=block_details
+                ))
+            
+            return MineruChunkResponse(
+                success=True,
+                message=result['message'],
+                query_text=result.get('query_text'),
+                cleaned_text=result.get('cleaned_text'),
+                similarity_threshold=result.get('similarity_threshold'),
+                results=match_results
+            )
+        else:
+            return MineruChunkResponse(
+                success=False,
+                message=result['message'],
+                query_text=result.get('query_text'),
+                cleaned_text=result.get('cleaned_text'),
+                similarity_threshold=result.get('similarity_threshold'),
+                results=[]
+            )
+            
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail="指定的middle.json文件不存在"
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"请求参数错误: {str(e)}"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"处理过程中出现错误: {str(e)}"
+        )
+
+
 @app.get("/docs-info")
 async def get_api_docs():
     """获取API文档信息"""
@@ -292,6 +421,11 @@ async def get_api_docs():
                 "chunk_text": "元器件安装孔与元器件引线不匹配",
                 "pdf_path": "data/航天电子产品常见质量缺陷案例.13610530(2).pdf",
                 "similarity_threshold": 0.5
+            },
+            "mineru_locate_example": {
+                "filename": "航天电子产品常见质量缺陷案例.13610530(2)",
+                "text": "元器件安装孔与元器件引线不匹配",
+                "similarity_threshold": 0.6
             }
         }
     }
