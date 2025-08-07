@@ -15,7 +15,7 @@ import shutil
 from pathlib import Path
 
 from rag_chunk_locator import find_rag_chunk_coordinates, analyze_chunk_content
-from mineru_locator import mineru_chunk_locate
+from mineru_locator import mineru_chunk_locate, header_chunk_locate
 
 # 创建FastAPI应用
 app = FastAPI(
@@ -107,6 +107,7 @@ class BlockDetail(BaseModel):
     bbox: List[float] = Field(..., description="文本块边界框")
     bbox_fs: Optional[List[float]] = Field(None, description="更精确的边界框")
     index: int = Field(..., description="文本块索引")
+    source_page_idx: Optional[int] = Field(None, description="文本块所在的页码索引（从0开始）")
 
 
 class MineruMatchResult(BaseModel):
@@ -143,6 +144,7 @@ async def root():
             "analyze": "/analyze - POST - 分析切片内容",
             "upload": "/upload - POST - 上传PDF并定位",
             "mineru-locate": "/mineru-locate - POST - MinerU格式文本定位",
+            "header-locate": "/header-locate - POST - 指定页码标题文本定位",
             "health": "/health - GET - 健康检查"
         }
     }
@@ -369,7 +371,8 @@ async def mineru_locate_chunk(request: MineruChunkRequest):
                     block_details.append(BlockDetail(
                         bbox=detail['bbox'],
                         bbox_fs=detail.get('bbox_fs'),
-                        index=detail['index']
+                        index=detail['index'],
+                        source_page_idx=detail.get('source_page_idx')
                     ))
                 
                 match_results.append(MineruMatchResult(
@@ -417,6 +420,114 @@ async def mineru_locate_chunk(request: MineruChunkRequest):
         )
 
 
+
+@app.post("/header-locate", response_model=MineruChunkResponse)
+async def header_locate_chunk(request: MineruChunkRequest):
+    """
+    指定页码范围标题文本定位接口
+    通过匹配文本的开头30%和结尾30%来定位整个文本区域的坐标范围
+    
+    功能特点：
+    - 在指定页码开始的5页范围内搜索（page_number 到 page_number+4）
+    - 自动截取文本的开头30%和结尾30%进行匹配
+    - 将两个匹配区域合并为一个大的坐标范围
+    - 适用于跨页长文本的精确定位
+    - 返回结果包含页面分布信息
+    - 每个文本块都标记其所在的页码（source_page_idx）
+    
+    示例请求：
+    {
+        "filename": "航天电子产品常见质量缺陷案例.13610530(2)",
+        "text": "具有电气连接关系的焊盘之间相互连接时，焊盘之间没有采用印制导线，而是共用焊盘相互连接。这种设计会降低锁通孔的孔壁强度，且焊接时容易导致焊点之间相互干扰，如'偷锡'和重熔，见图1-11所示。缺陷案例照片、图片：(a)相邻元器件安装孔之间间距小，导致焊接后相互干扰；(b)相邻导线安装孔之间间距小于印制板的厚度。图1-11焊盘间距设计缺陷。正确方法：具有电气连接关系的焊盘之间互相连接时，应采用印制导线进行连接，焊盘之间不应共用焊盘。两焊盘之间的距离应为印制板的厚度或两孔中较小者的直径。",
+        "similarity_threshold": 0.6,
+        "page_number": 21
+    }
+    # 将在页面13-17范围内搜索文本
+    
+    Args:
+        request: 包含文件名、文本内容和起始页码的请求
+        
+    Returns:
+        MineruChunkResponse: 定位结果，包含合并后的坐标范围和页面分布信息
+    """
+    try:
+        # 验证page_number参数
+        if request.page_number is None:
+            raise HTTPException(
+                status_code=400,
+                detail="header-locate接口必须指定page_number参数"
+            )
+        
+        # 调用核心定位功能
+        result = header_chunk_locate(
+            filename=request.filename,
+            text=request.text,
+            page_number=request.page_number,
+            similarity_threshold=request.similarity_threshold
+        )
+        
+        # 转换结果格式
+        if result['success']:
+            # 转换匹配结果
+            match_results = []
+            for match in result['results']:
+                block_details = []
+                for detail in match['block_details']:
+                    block_details.append(BlockDetail(
+                        bbox=detail['bbox'],
+                        bbox_fs=detail.get('bbox_fs'),
+                        index=detail['index'],
+                        source_page_idx=detail.get('source_page_idx')
+                    ))
+                
+                match_results.append(MineruMatchResult(
+                    page_idx=match['page_idx'],
+                    page_size=match['page_size'],
+                    bbox=match['bbox'],
+                    similarity=match['similarity'],
+                    block_count=match['block_count'],
+                    matched_text_preview=match['matched_text_preview'],
+                    block_details=block_details
+                ))
+            
+            return MineruChunkResponse(
+                success=True,
+                message=result['message'],
+                query_text=result.get('query_text'),
+                cleaned_text=result.get('cleaned_text'),
+                similarity_threshold=result.get('similarity_threshold'),
+                results=match_results
+            )
+        else:
+            return MineruChunkResponse(
+                success=False,
+                message=result['message'],
+                query_text=result.get('query_text'),
+                cleaned_text=result.get('cleaned_text'),
+                similarity_threshold=result.get('similarity_threshold'),
+                results=[]
+            )
+            
+    except HTTPException:
+        # 重新抛出HTTPException，保持原有的状态码和消息
+        raise
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail="指定的middle.json文件不存在"
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"请求参数错误: {str(e)}"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"处理过程中出现错误: {str(e)}"
+        )
+
+
 @app.get("/docs-info")
 async def get_api_docs():
     """获取API文档信息"""
@@ -435,6 +546,13 @@ async def get_api_docs():
                 "text": "元器件安装孔与元器件引线不匹配",
                 "similarity_threshold": 0.6,
                 "page_number": 13
+            },
+            "header_locate_example": {
+                "filename": "航天电子产品常见质量缺陷案例.13610530(2)",
+                "text": "印制板上的元器件安装孔焊接的导线或者元器件引线超过一根，如图1-6(a)所示。多层印制板中具有界面连接作用的金属化孔用来安装元器件...",
+                "similarity_threshold": 0.6,
+                "page_number": 13,
+                "description": "在页面13-17范围内通过匹配开头30%和结尾30%定位整个文本区域"
             }
         }
     }

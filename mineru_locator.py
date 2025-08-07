@@ -268,7 +268,8 @@ def mineru_chunk_locate(filename: str, text: str, similarity_threshold: float = 
                         {
                             "bbox": block.get('bbox', []),
                             "bbox_fs": block.get('bbox_fs', []),
-                            "index": int(block.get('index', 0))  # 确保index是整数
+                            "index": int(block.get('index', 0)),  # 确保index是整数
+                            "source_page_idx": page_idx  # 添加文本块所在的页码
                         }
                         for block in matched_blocks
                     ]
@@ -335,8 +336,8 @@ def calculate_combined_bbox(blocks: List[Dict]) -> List[float]:
         return [0, 0, 0, 0]
     
     # 计算最小外接矩形
-    x0 = min(bbox[0] for bbox in all_bboxes)
-    y0 = min(bbox[1] for bbox in all_bboxes)
+    x0 = max(bbox[0] for bbox in all_bboxes)
+    y0 = max(bbox[1] for bbox in all_bboxes)
     x1 = max(bbox[2] for bbox in all_bboxes)
     y1 = max(bbox[3] for bbox in all_bboxes)
     
@@ -380,3 +381,468 @@ def bbox_overlap_ratio(bbox1: List[float], bbox2: List[float]) -> float:
         return 0.0
     
     return intersection / union
+
+
+def header_chunk_locate(filename: str, text: str, page_number: int, similarity_threshold: float = 0.6) -> Dict[str, Any]:
+    """
+    在指定页码中定位文本，通过匹配开头30%和结尾30%的文本来确定整体坐标范围
+    
+    Args:
+        filename: 文件名（不含扩展名）
+        text: 待匹配的文本
+        page_number: 指定的页码索引（从0开始）
+        similarity_threshold: 相似度阈值
+        
+    Returns:
+        匹配结果字典
+    """
+    # 1. 数据清洗
+    cleaned_text = clean_text_for_matching(text)
+    if not cleaned_text:
+        return {
+            "success": False,
+            "message": "输入文本为空或无效",
+            "results": []
+        }
+    
+    # 2. 截取开头30%和结尾30%的文本
+    text_length = len(cleaned_text)
+    start_portion_length = max(20, int(text_length * 0.1))  # 至少20个字符
+    end_portion_length = max(20, int(text_length * 0.1))    # 至少20个字符
+    
+    start_text = cleaned_text[:start_portion_length]
+    end_text = cleaned_text[-end_portion_length:]
+    
+    # 短文本支持高精度匹配
+    if len(cleaned_text) < 100:
+        similarity_threshold = 0.5
+    
+    # 3. 加载middle.json文件
+    json_data = load_middle_json(filename)
+    if not json_data:
+        return {
+            "success": False,
+            "message": f"未找到文件: {filename}_middle.json",
+            "results": []
+        }
+    
+    pdf_info = json_data.get('pdf_info', [])
+    if not pdf_info:
+        return {
+            "success": False,
+            "message": "JSON文件格式错误：未找到pdf_info",
+            "results": []
+        }
+    
+    # 4. 验证指定页码范围是否存在
+    start_page = page_number
+    end_page = min(page_number + 4, len(pdf_info) - 1)  # 最多查找5页，不超过文档总页数
+    
+    if start_page < 0 or start_page >= len(pdf_info):
+        return {
+            "success": False,
+            "message": f"指定的起始页码 {start_page} 超出文档范围（总页数: {len(pdf_info)}）",
+            "results": []
+        }
+    
+    # 5. 在指定页码范围内收集所有text_blocks
+    all_text_blocks = []
+    page_ranges = []
+    
+    for current_page_idx in range(start_page, end_page + 1):
+        page_info = pdf_info[current_page_idx]
+        para_blocks = page_info.get('para_blocks', [])
+        page_size = page_info.get('page_size', [0, 0])
+        
+        # 筛选type为text的块，并记录页面信息
+        page_text_blocks = []
+        for block in para_blocks:
+            if block.get('type') == 'text':
+                # 为每个文本块添加页面信息
+                block_with_page = block.copy()
+                block_with_page['source_page_idx'] = current_page_idx
+                block_with_page['source_page_size'] = page_size
+                page_text_blocks.append(block_with_page)
+        
+        all_text_blocks.extend(page_text_blocks)
+        page_ranges.append({
+            'page_idx': current_page_idx,
+            'page_size': page_size,
+            'block_count': len(page_text_blocks)
+        })
+    
+    if not all_text_blocks:
+        return {
+            "success": False,
+            "message": f"第 {start_page} 到 {end_page} 页中未找到文本块",
+            "results": []
+        }
+    
+    # 6. 分别查找开头30%和结尾30%的文本（在多页范围内）
+    start_match = find_text_segment_in_pages(all_text_blocks, start_text, similarity_threshold)
+    end_match = find_text_segment_in_pages(all_text_blocks, end_text, similarity_threshold)
+    
+    # 7. 分析匹配结果
+    if start_match and end_match:
+        # 获取开始和结束匹配的页面信息
+        start_pages = start_match.get('page_idx', [])
+        end_pages = end_match.get('page_idx', [])
+        
+        # 确定开始和结束页面索引
+        start_page_idx = start_pages if isinstance(start_pages, int) else start_pages[0]
+        end_page_idx = end_pages if isinstance(end_pages, int) else end_pages[0]
+        
+        # 检查是否在同一页面
+        if start_page_idx == end_page_idx:
+            # 同一页面，使用原有逻辑
+            start_bbox = start_match['bbox']
+            end_bbox = end_match['bbox']
+            
+            # 计算合并后的大边界框
+            combined_bbox = [
+                min(start_bbox[0], end_bbox[0]),  # 最小x
+                min(start_bbox[1], end_bbox[1]),  # 最小y
+                max(start_bbox[2], end_bbox[2]),  # 最大x
+                max(start_bbox[3], end_bbox[3])   # 最大y
+            ]
+            
+            # 合并所有相关的文本块
+            all_blocks = start_match['blocks'] + end_match['blocks']
+            # 去重（根据index）
+            unique_blocks = []
+            seen_indices = set()
+            for block in all_blocks:
+                block_index = block.get('index', 0)
+                if block_index not in seen_indices:
+                    unique_blocks.append(block)
+                    seen_indices.add(block_index)
+            
+            # 提取匹配的文本预览
+            matched_text = ""
+            for block in unique_blocks:
+                matched_text += extract_text_from_para_block(block)
+            
+            avg_similarity = (start_match['similarity'] + end_match['similarity']) / 2
+            
+            # 获取页面尺寸
+            page_size = next(
+                (pr['page_size'] for pr in page_ranges if pr['page_idx'] == start_page_idx),
+                [0, 0]
+            )
+            
+            match_result = {
+                "cross_page_match": False,
+                "page_idx": start_page_idx,
+                "page_size": page_size,
+                "bbox": combined_bbox,
+                "similarity": round(avg_similarity, 3),
+                "block_count": len(unique_blocks),
+                "matched_text_preview": matched_text[:200] + "..." if len(matched_text) > 200 else matched_text,
+                "block_details": [
+                    {
+                        "bbox": block.get('bbox', []),
+                        "bbox_fs": block.get('bbox_fs', []),
+                        "index": int(block.get('index', 0)),
+                        "source_page_idx": block.get('source_page_idx', start_page_idx)
+                    }
+                    for block in unique_blocks
+                ],
+                "match_info": {
+                    "start_text": start_text[:50] + "..." if len(start_text) > 50 else start_text,
+                    "end_text": end_text[:50] + "..." if len(end_text) > 50 else end_text,
+                    "start_similarity": round(start_match['similarity'], 3),
+                    "end_similarity": round(end_match['similarity'], 3),
+                    "search_range": f"页面 {start_page} 到 {end_page}",
+                    "cross_page": False
+                }
+            }
+            
+            # 同页匹配返回单个结果
+            return {
+                "success": True,
+                "message": f"在页面 {start_page}-{end_page} 范围内成功定位文本区域（通过开头和结尾30%匹配）",
+                "query_text": text,
+                "cleaned_text": cleaned_text,
+                "similarity_threshold": similarity_threshold,
+                "results": [match_result]
+            }
+            
+        else:
+            # 跨页匹配，返回两个独立的匹配结果
+            start_page_size = next(
+                (pr['page_size'] for pr in page_ranges if pr['page_idx'] == start_page_idx),
+                [0, 0]
+            )
+            end_page_size = next(
+                (pr['page_size'] for pr in page_ranges if pr['page_idx'] == end_page_idx),
+                [0, 0]
+            )
+            
+            # 计算开始页面的区域：从匹配位置到页面底部
+            start_bbox = start_match['bbox']
+            start_region_bbox = [
+                0,  # 左边界设为页面左边
+                start_bbox[1],  # 上边界为匹配位置的上边界
+                start_page_size[0],  # 右边界设为页面右边
+                start_page_size[1]  # 下边界设为页面底部
+            ]
+            
+            # 计算结束页面的区域：从页面顶部到匹配位置
+            end_bbox = end_match['bbox']
+            end_region_bbox = [
+                0,  # 左边界设为页面左边
+                0,  # 上边界设为页面顶部
+                end_page_size[0],  # 右边界设为页面右边
+                end_bbox[3]  # 下边界为匹配位置的下边界
+            ]
+            
+            # 构建开始区域的block_details
+            start_block_details = [
+                {
+                    "bbox": block.get('bbox', []),
+                    "bbox_fs": block.get('bbox_fs', []),
+                    "index": int(block.get('index', 0)),
+                    "source_page_idx": block.get('source_page_idx', start_page_idx)
+                }
+                for block in start_match['blocks']
+            ]
+            
+            # 构建结束区域的block_details
+            end_block_details = [
+                {
+                    "bbox": block.get('bbox', []),
+                    "bbox_fs": block.get('bbox_fs', []),
+                    "index": int(block.get('index', 0)),
+                    "source_page_idx": block.get('source_page_idx', end_page_idx)
+                }
+                for block in end_match['blocks']
+            ]
+            
+            # 创建开始区域的匹配结果
+            start_match_result = {
+                "cross_page_match": True,
+                "region_type": "start",
+                "page_idx": start_page_idx,
+                "page_size": start_page_size,
+                "bbox": start_region_bbox,
+                "similarity": round(start_match['similarity'], 3),
+                "block_count": len(start_match['blocks']),
+                "matched_text_preview": start_match.get('text', '')[:200] + "..." if len(start_match.get('text', '')) > 200 else start_match.get('text', ''),
+                "block_details": start_block_details,
+                "match_info": {
+                    "start_text": start_text[:50] + "..." if len(start_text) > 50 else start_text,
+                    "end_text": end_text[:50] + "..." if len(end_text) > 50 else end_text,
+                    "start_similarity": round(start_match['similarity'], 3),
+                    "end_similarity": round(end_match['similarity'], 3),
+                    "search_range": f"页面 {start_page} 到 {end_page}",
+                    "cross_page": True,
+                    "region_type": "start"
+                }
+            }
+            
+            # 创建结束区域的匹配结果
+            end_match_result = {
+                "cross_page_match": True,
+                "region_type": "end",
+                "page_idx": end_page_idx,
+                "page_size": end_page_size,
+                "bbox": end_region_bbox,
+                "similarity": round(end_match['similarity'], 3),
+                "block_count": len(end_match['blocks']),
+                "matched_text_preview": end_match.get('text', '')[:200] + "..." if len(end_match.get('text', '')) > 200 else end_match.get('text', ''),
+                "block_details": end_block_details,
+                "match_info": {
+                    "start_text": start_text[:50] + "..." if len(start_text) > 50 else start_text,
+                    "end_text": end_text[:50] + "..." if len(end_text) > 50 else end_text,
+                    "start_similarity": round(start_match['similarity'], 3),
+                    "end_similarity": round(end_match['similarity'], 3),
+                    "search_range": f"页面 {start_page} 到 {end_page}",
+                    "cross_page": True,
+                    "region_type": "end"
+                }
+            }
+            
+            # 跨页匹配返回两个结果
+            return {
+                "success": True,
+                "message": f"在页面 {start_page}-{end_page} 范围内成功定位跨页文本区域（通过开头和结尾30%匹配）",
+                "query_text": text,
+                "cleaned_text": cleaned_text,
+                "similarity_threshold": similarity_threshold,
+                "results": [start_match_result, end_match_result]
+            }
+
+        
+    elif start_match:
+        # 只找到开头部分
+        # 使用新添加的page_idx信息
+        start_pages = start_match.get('page_idx', start_page)
+        match_page_idx = start_pages if isinstance(start_pages, int) else start_pages[0]
+        match_page_size = next(
+            (pr['page_size'] for pr in page_ranges if pr['page_idx'] == match_page_idx),
+            [0, 0]
+        )
+        
+        match_result = {
+            "page_idx": match_page_idx,
+            "page_size": match_page_size,
+            "bbox": start_match['bbox'],
+            "similarity": round(start_match['similarity'], 3),
+            "block_count": len(start_match['blocks']),
+            "matched_text_preview": start_match['text'][:200] + "..." if len(start_match['text']) > 200 else start_match['text'],
+            "block_details": [
+                {
+                    "bbox": block.get('bbox', []),
+                    "bbox_fs": block.get('bbox_fs', []),
+                    "index": int(block.get('index', 0)),
+                    "source_page_idx": block.get('source_page_idx', match_page_idx)
+                }
+                for block in start_match['blocks']
+            ],
+            "match_info": {
+                "match_type": "start_only",
+                "start_text": start_text[:50] + "..." if len(start_text) > 50 else start_text,
+                "start_similarity": round(start_match['similarity'], 3),
+                "search_range": f"页面 {start_page} 到 {end_page}"
+            }
+        }
+        
+        return {
+            "success": True,
+            "message": f"在页面 {start_page}-{end_page} 范围内找到文本开头部分",
+            "query_text": text,
+            "cleaned_text": cleaned_text,
+            "similarity_threshold": similarity_threshold,
+            "results": [match_result]
+        }
+        
+    elif end_match:
+        # 只找到结尾部分
+        # 使用新添加的page_idx信息
+        end_pages = end_match.get('page_idx', start_page)
+        match_page_idx = end_pages if isinstance(end_pages, int) else end_pages[0]
+        match_page_size = next(
+            (pr['page_size'] for pr in page_ranges if pr['page_idx'] == match_page_idx),
+            [0, 0]
+        )
+        
+        match_result = {
+            "page_idx": match_page_idx,
+            "page_size": match_page_size,
+            "bbox": end_match['bbox'],
+            "similarity": round(end_match['similarity'], 3),
+            "block_count": len(end_match['blocks']),
+            "matched_text_preview": end_match['text'][:200] + "..." if len(end_match['text']) > 200 else end_match['text'],
+            "block_details": [
+                {
+                    "bbox": block.get('bbox', []),
+                    "bbox_fs": block.get('bbox_fs', []),
+                    "index": int(block.get('index', 0)),
+                    "source_page_idx": block.get('source_page_idx', match_page_idx)
+                }
+                for block in end_match['blocks']
+            ],
+            "match_info": {
+                "match_type": "end_only", 
+                "end_text": end_text[:50] + "..." if len(end_text) > 50 else end_text,
+                "end_similarity": round(end_match['similarity'], 3),
+                "search_range": f"页面 {start_page} 到 {end_page}"
+            }
+        }
+        
+        return {
+            "success": True,
+            "message": f"在页面 {start_page}-{end_page} 范围内找到文本结尾部分",
+            "query_text": text,
+            "cleaned_text": cleaned_text,
+            "similarity_threshold": similarity_threshold,
+            "results": [match_result]
+        }
+    
+    else:
+        return {
+            "success": False,
+            "message": f"在页面 {start_page}-{end_page} 范围内未找到匹配的文本区域（开头30%和结尾30%都未匹配），建议降低相似度阈值",
+            "query_text": text,
+            "cleaned_text": cleaned_text,
+            "similarity_threshold": similarity_threshold,
+            "results": []
+        }
+
+
+def find_text_segment_in_pages(text_blocks: List[Dict], target_text: str, threshold: float) -> Optional[Dict[str, Any]]:
+    """
+    在多个页面中查找文本片段的最佳匹配
+    
+    Args:
+        text_blocks: 包含多页文本块的列表（每个块包含source_page_idx信息）
+        target_text: 目标文本片段
+        threshold: 相似度阈值
+        
+    Returns:
+        匹配结果字典，包含bbox、blocks、similarity、text和page_idx，如果未找到返回None
+        - bbox: 文本块的边界框坐标
+        - blocks: 匹配的文本块列表
+        - similarity: 文本相似度分数
+        - text: 合并的文本内容
+        - page_idx: 页面索引（单页时为整数，多页时为整数列表）
+    """
+    # 清洗目标文本
+    target_cleaned = clean_text_for_matching(target_text)
+    if not target_cleaned:
+        return None
+    
+    best_match = None
+    best_similarity = 0.0
+    
+    # 遍历所有可能的文本块组合
+    for start_idx in range(len(text_blocks)):
+        for end_idx in range(start_idx, len(text_blocks)):
+            # 提取从start_idx到end_idx的所有文本
+            combined_text = ""
+            current_blocks = text_blocks[start_idx:end_idx + 1]
+            
+            for block in current_blocks:
+                block_text = extract_text_from_para_block(block)
+                if block_text:
+                    combined_text += block_text
+            
+            if not combined_text:
+                continue
+            
+            # 计算相似度
+            combined_cleaned = clean_text_for_matching(combined_text)
+            similarity = calculate_text_similarity(target_cleaned, combined_cleaned)
+            
+            # 更新最佳匹配
+            if similarity >= threshold and similarity > best_similarity:
+                # 计算这组文本块的合并边界框
+                combined_bbox = calculate_combined_bbox(current_blocks)
+                
+                # 收集所有相关的页面信息
+                page_indices = []
+                for block in current_blocks:
+                    page_idx = block.get('source_page_idx')
+                    if page_idx is not None and page_idx not in page_indices:
+                        page_indices.append(page_idx)
+                
+                # 如果只有一个页面，直接返回page_idx；如果跨多页，返回页面列表
+                if len(page_indices) == 1:
+                    page_info = page_indices[0]
+                else:
+                    page_info = sorted(page_indices)  # 多页时返回排序的页面列表
+                
+                best_match = {
+                    'bbox': combined_bbox,
+                    'blocks': current_blocks.copy(),
+                    'similarity': similarity,
+                    'text': combined_text,
+                    'page_idx': page_info
+                }
+                best_similarity = similarity
+            
+            # 优化：如果文本长度已经远超目标文本，可以停止扩展
+            if len(combined_cleaned) > len(target_cleaned) * 2:
+                break
+    
+    return best_match
