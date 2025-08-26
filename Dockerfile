@@ -1,5 +1,5 @@
 # 使用官方Python 3.12镜像作为基础镜像
-FROM python:3.12-slim
+FROM --platform=linux/amd64 python:3.12-slim
 
 # 设置工作目录
 WORKDIR /app
@@ -30,6 +30,11 @@ COPY . .
 
 # 创建必要的目录
 RUN mkdir -p /app/data /app/logs
+# 拷贝data目录下的文件到/app/data
+COPY data/* /app/data/
+
+# 创建数据挂载点
+VOLUME ["/app/data"]
 
 # 暴露端口
 EXPOSE 8004

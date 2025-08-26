@@ -20,7 +20,7 @@ from mineru_locator import mineru_chunk_locate, header_chunk_locate
 # 创建FastAPI应用
 app = FastAPI(
     title="RAG切片定位服务",
-    description="在PDF文档中精确定位RAG知识切片的坐标位置",
+    description="在PDF文档中精确定位RAG知识切片的坐标位置，所有涉及文件名的接口，全部不要后缀",
     version="1.0.0"
 )
 
@@ -131,6 +131,38 @@ class MineruChunkResponse(BaseModel):
     results: List[MineruMatchResult] = Field(default=[], description="匹配结果列表")
 
 
+class SaveMiddleJsonRequest(BaseModel):
+    """保存middle.json文件请求模型"""
+    filename: str = Field(..., min_length=1, description="文件名（不含扩展名）")
+    middle_json: str = Field(..., min_length=1, description="middle.json文件内容")
+    
+    @validator('filename')
+    def validate_filename(cls, v):
+        if not v.strip():
+            raise ValueError('文件名不能为空')
+        # 移除可能的路径分隔符，确保安全
+        v = v.replace('/', '').replace('\\', '').replace('..', '')
+        return v.strip()
+    
+    @validator('middle_json')
+    def validate_middle_json(cls, v):
+        if not v.strip():
+            raise ValueError('middle_json内容不能为空')
+        # 验证是否为有效的JSON格式
+        try:
+            json.loads(v)
+        except json.JSONDecodeError:
+            raise ValueError('middle_json必须是有效的JSON格式')
+        return v.strip()
+
+
+class SaveMiddleJsonResponse(BaseModel):
+    """保存middle.json文件响应模型"""
+    success: bool = Field(..., description="是否保存成功")
+    message: str = Field(..., description="响应消息")
+    saved_file_path: Optional[str] = Field(None, description="保存的文件路径")
+
+
 # API端点
 @app.get("/")
 async def root():
@@ -145,6 +177,7 @@ async def root():
             "upload": "/upload - POST - 上传PDF并定位",
             "mineru-locate": "/mineru-locate - POST - MinerU格式文本定位",
             "header-locate": "/header-locate - POST - 指定页码标题文本定位",
+            "saveMiddleJson": "/saveMiddleJson - POST - 保存middle.json文件到data目录",
             "health": "/health - GET - 健康检查"
         }
     }
@@ -528,6 +561,59 @@ async def header_locate_chunk(request: MineruChunkRequest):
         )
 
 
+@app.post("/saveMiddleJson", response_model=SaveMiddleJsonResponse)
+async def save_middle_json(request: SaveMiddleJsonRequest):
+    """
+    保存middle.json文件到data目录
+    
+    Args:
+        request: 包含文件名和middle.json内容的请求
+        
+    Returns:
+        SaveMiddleJsonResponse: 保存结果
+    """
+    try:
+        # 确保data目录存在
+        data_dir = Path("./data")
+        data_dir.mkdir(exist_ok=True)
+        
+        # 构建文件名
+        filename = f"{request.filename}_middle.json"
+        file_path = data_dir / filename
+        
+        # 检查文件是否已存在
+        file_exists = file_path.exists()
+        
+        # 保存文件
+        with open(file_path, 'w', encoding='utf-8') as f:
+            # 先解析JSON字符串为对象，然后格式化保存
+            json_data = json.loads(request.middle_json)
+            json.dump(json_data, f, ensure_ascii=False, indent=2)
+        
+        # 构建响应消息
+        if file_exists:
+            message = f"成功更新文件: {filename}"
+        else:
+            message = f"成功创建文件: {filename}"
+        
+        return SaveMiddleJsonResponse(
+            success=True,
+            message=message,
+            saved_file_path=str(file_path)
+        )
+        
+    except PermissionError:
+        raise HTTPException(
+            status_code=403,
+            detail="没有写入文件的权限"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"保存文件时出现错误: {str(e)}"
+        )
+
+
 @app.get("/docs-info")
 async def get_api_docs():
     """获取API文档信息"""
@@ -553,6 +639,11 @@ async def get_api_docs():
                 "similarity_threshold": 0.6,
                 "page_number": 13,
                 "description": "在页面13-17范围内通过匹配开头30%和结尾30%定位整个文本区域"
+            },
+            "save_middle_json_example": {
+                "filename": "test_document",
+                "middle_json": "{\"pages\": [{\"page_idx\": 0, \"blocks\": [{\"bbox\": [100, 200, 300, 250], \"text\": \"示例文本\"}]}]}",
+                "description": "保存middle.json文件到data目录，文件名为test_document_middle.json"
             }
         }
     }
